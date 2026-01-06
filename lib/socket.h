@@ -101,6 +101,7 @@ typedef struct birdsock {
   int fd;				/* System-dependent data */
   int index;				/* Index in poll buffer */
   int rcv_ttl;				/* TTL of last received datagram */
+  btime rcv_tstamp;			/* RX timestamp of last datagram (monotonic, us) */
   node n;
   void *rbuf_alloc, *tbuf_alloc;
   const char *password;			/* Password for MD5 authentication (for SK_TCP_ACTIVE) */
@@ -181,6 +182,7 @@ extern int sk_priority_control;		/* Suggested priority for control traffic, shou
 #define SKF_PKTINFO	0x800	/* Used internally */
 
 #define SKF_UDP6_NO_CSUM_RX	0x1000	/* Accept zero checksums for received UDPv6 packets */
+#define SKF_TIMESTAMP	0x2000	/* Request kernel RX timestamps */
 
 /*
  *	Socket types		     SA SP DA DP IF  TTL SendTo	(?=may, -=must not, *=must)

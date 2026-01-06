@@ -1591,6 +1591,7 @@ babel_enqueue(union babel_msg *msg, struct babel_iface *ifa)
  * @ifa: Interface packet was received on
  * @pkt: Pointer to the packet data
  * @len: Length of received packet
+ * @received_time: Time the packet was received
  * @saddr: Address of packet sender
  * @sport: Packet source port
  * @daddr: Destination address of packet
@@ -1607,7 +1608,7 @@ babel_enqueue(union babel_msg *msg, struct babel_iface *ifa)
  */
 static void
 babel_process_packet(struct babel_iface *ifa,
-		     struct babel_pkt_header *pkt, int len,
+		     struct babel_pkt_header *pkt, int len, btime received_time,
                      ip_addr saddr, u16 sport,
 		     ip_addr daddr, u16 dport)
 {
@@ -1630,12 +1631,7 @@ babel_process_packet(struct babel_iface *ifa,
     .next_hop_ip6    = saddr,
     .sadr_enabled    = babel_sadr_enabled(p),
 
-    /*
-     * The core updates current_time() after returning from poll(), so this is
-     * actually the time the packet was received, even though there may have
-     * been a bit of delay before we got to process it
-     */
-    .received_time   = current_time(),
+    .received_time   = received_time,
   };
 
   if ((pkt->magic != BABEL_MAGIC) || (pkt->version != BABEL_VERSION))
@@ -1723,6 +1719,7 @@ babel_rx_hook(sock *sk, uint len)
 {
   struct babel_iface *ifa = sk->data;
   struct babel_proto *p = ifa->proto;
+  btime received_time = sk->rcv_tstamp ? sk->rcv_tstamp : current_time();
   const char *err_dsc = NULL;
   uint err_val = 0;
 
@@ -1749,7 +1746,7 @@ babel_rx_hook(sock *sk, uint len)
     DROP("truncated", len);
 
   babel_process_packet(ifa,
-		       (struct babel_pkt_header *) sk->rbuf, len,
+		       (struct babel_pkt_header *) sk->rbuf, len, received_time,
 		       sk->faddr, sk->fport,
 		       sk->laddr, sk->dport);
   return 1;
@@ -1782,7 +1779,7 @@ babel_open_socket(struct babel_iface *ifa)
   sk->tos = ifa->cf->tx_tos;
   sk->priority = ifa->cf->tx_priority;
   sk->ttl = 1;
-  sk->flags = SKF_LADDR_RX;
+  sk->flags = SKF_LADDR_RX | SKF_TIMESTAMP;
 
   if (sk_open(sk, p->p.loop) < 0)
     goto err;

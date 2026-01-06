@@ -1371,6 +1371,17 @@ sk_setup(sock *s)
 	return -1;
   }
 
+  if (s->flags & SKF_TIMESTAMP)
+  {
+#ifdef SO_TIMESTAMPNS
+    if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPNS, &y, sizeof(y)) < 0)
+      ERR("SO_TIMESTAMPNS");
+#elif defined(SO_TIMESTAMP)
+    if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMP, &y, sizeof(y)) < 0)
+      ERR("SO_TIMESTAMP");
+#endif
+  }
+
   /* Must be after sk_set_tos4() as setting ToS on Linux also mangles priority */
   if (s->priority >= 0)
     if (sk_set_priority(s, s->priority) < 0)
@@ -1912,8 +1923,16 @@ sk_open_unix(sock *s, struct birdloop *loop, const char *name)
 }
 
 
-#define CMSG_RX_SPACE MAX(CMSG4_SPACE_PKTINFO+CMSG4_SPACE_TTL, \
-			  CMSG6_SPACE_PKTINFO+CMSG6_SPACE_TTL)
+#if defined(SCM_TIMESTAMPNS)
+#define CMSG_SPACE_TIMESTAMP CMSG_SPACE(sizeof(struct timespec))
+#elif defined(SCM_TIMESTAMP)
+#define CMSG_SPACE_TIMESTAMP CMSG_SPACE(sizeof(struct timeval))
+#else
+#define CMSG_SPACE_TIMESTAMP 0
+#endif
+
+#define CMSG_RX_SPACE MAX(CMSG4_SPACE_PKTINFO+CMSG4_SPACE_TTL+CMSG_SPACE_TIMESTAMP, \
+			  CMSG6_SPACE_PKTINFO+CMSG6_SPACE_TTL+CMSG_SPACE_TIMESTAMP)
 #define CMSG_TX_SPACE MAX(CMSG4_SPACE_PKTINFO,CMSG6_SPACE_PKTINFO)
 
 static void
@@ -1933,9 +1952,32 @@ sk_process_cmsgs(sock *s, struct msghdr *msg)
   s->laddr = IPA_NONE;
   s->lifindex = 0;
   s->rcv_ttl = -1;
+  s->rcv_tstamp = 0;
 
   for (cm = CMSG_FIRSTHDR(msg); cm != NULL; cm = CMSG_NXTHDR(msg, cm))
   {
+    if (cm->cmsg_level == SOL_SOCKET)
+    {
+#ifdef SCM_TIMESTAMPNS
+      if (cm->cmsg_type == SCM_TIMESTAMPNS)
+      {
+        struct timespec *ts = (struct timespec *) CMSG_DATA(cm);
+        btime rt = ts->tv_sec S + ts->tv_nsec NS;
+        s->rcv_tstamp = rt + (current_time() - current_real_time());
+        continue;
+      }
+#endif
+#ifdef SCM_TIMESTAMP
+      if (cm->cmsg_type == SCM_TIMESTAMP)
+      {
+        struct timeval *tv = (struct timeval *) CMSG_DATA(cm);
+        btime rt = tv->tv_sec S + tv->tv_usec US;
+        s->rcv_tstamp = rt + (current_time() - current_real_time());
+        continue;
+      }
+#endif
+    }
+
     if ((cm->cmsg_level == SOL_IP) && sk_is_ipv4(s))
     {
       sk_process_cmsg4_pktinfo(s, cm);
