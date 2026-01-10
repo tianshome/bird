@@ -265,6 +265,7 @@ bgp_prepare_capabilities(struct bgp_conn *conn)
   conn->local_caps = caps;
 
   caps->as4_support = p->cf->enable_as4;
+  caps->as4_number = p->public_as;
   caps->ext_messages = p->cf->enable_extended_messages;
   caps->route_refresh = p->cf->enable_refresh;
   caps->enhanced_refresh = p->cf->enable_refresh && p->cf->enable_enhanced_refresh;
@@ -327,10 +328,8 @@ bgp_prepare_capabilities(struct bgp_conn *conn)
 }
 
 static byte *
-bgp_write_capabilities(struct bgp_conn *conn, byte *buf)
+bgp_write_capabilities(struct bgp_caps *caps, byte *buf)
 {
-  struct bgp_proto *p = conn->bgp;
-  struct bgp_caps *caps = conn->local_caps;
   struct bgp_af_caps *ac;
   byte *buf_head = buf;
   byte *data;
@@ -413,7 +412,7 @@ bgp_write_capabilities(struct bgp_conn *conn, byte *buf)
   {
     *buf++ = 65;		/* Capability 65: Support for 4-octet AS number */
     *buf++ = 4;			/* Capability data length */
-    put_u32(buf, p->public_as);
+    put_u32(buf, caps->as4_number);
     buf += 4;
   }
 
@@ -855,7 +854,7 @@ bgp_create_open(struct bgp_conn *conn, byte *buf)
   {
     /* Prepare local_caps and write capabilities to buffer */
     byte *pos = buf+12;
-    byte *end = bgp_write_capabilities(conn, pos);
+    byte *end = bgp_write_capabilities(conn->local_caps, pos);
     uint len = end - pos;
 
     if (len < 254)
@@ -1114,12 +1113,16 @@ bgp_apply_next_hop(struct bgp_parse_state *s, ea_list **to, ip_addr gw, ip_addr 
   if (c->cf->gw_mode == GW_DIRECT)
   {
     neighbor *nbr = NULL;
+    uint nb_flags = p->cf->onlink ? NEF_ONLINK : 0;
+    struct iface *default_iface = p->cf->onlink ? p->neigh->iface : NULL;
 
     /* GW_DIRECT -> single_hop -> p->neigh != NULL */
-    if (ipa_nonzero2(gw))
-      nbr = neigh_find(&p->p, gw, NULL, 0);
+    if ((c->cf->next_hop_prefer == NHP_GLOBAL) && ipa_nonzero2(gw))
+      nbr = neigh_find(&p->p, gw, default_iface, nb_flags);
     else if (ipa_nonzero(ll))
-      nbr = neigh_find(&p->p, ll, p->neigh->iface, 0);
+      nbr = neigh_find(&p->p, ll, p->neigh->iface, nb_flags);
+    else if (ipa_nonzero2(gw))
+      nbr = neigh_find(&p->p, gw, default_iface, nb_flags);
     else
       WITHDRAW(BAD_NEXT_HOP " - zero address");
 
@@ -1129,12 +1132,14 @@ bgp_apply_next_hop(struct bgp_parse_state *s, ea_list **to, ip_addr gw, ip_addr 
     if (nbr->scope == SCOPE_HOST)
       WITHDRAW(BAD_NEXT_HOP " - address %I is local", nbr->addr);
 
-    ea_set_attr_u32(to, &ea_gen_igp_metric, 0, c->cf->cost);
+    if (c->cf->cost)
+      ea_set_attr_u32(to, &ea_gen_local_metric, 0, c->cf->cost);
 
     struct nexthop_adata_mpls nam;
     memset(&nam, 0, sizeof nam);
     nam.nhad.nh.gw = nbr->addr;
     nam.nhad.nh.iface = nbr->iface;
+    nam.nhad.nh.flags = nbr->flags & NEF_ONLINK ? RNF_ONLINK : 0;
     nam.nhad.ad.length = NEXTHOP_NEXT(&nam.nhad.nh) - (void *) nam.nhad.ad.data;
     ea_set_attr_data(to, &ea_gen_nexthop, 0, nam.nhad.ad.data, nam.nhad.ad.length);
   }

@@ -461,6 +461,7 @@ nbma_item: ipa nbma_eligible ';'
 
 ospf_iface_start:
  {
+  this_proto->loop_order = DOMAIN_ORDER(proto);
   this_ipatt = cfg_allocz(sizeof(struct ospf_iface_patt));
   add_tail(&this_area->patt_list, NODE this_ipatt);
   init_list(&this_ipatt->ipn_list);
@@ -555,7 +556,7 @@ lsadb_args:
  | lsadb_args GLOBAL { $$ = $1; $$->scope = LSA_SCOPE_AS; }
  | lsadb_args AREA idval { $$ = $1; $$->scope = LSA_SCOPE_AREA; $$->area = $3; }
  | lsadb_args LINK { $$ = $1; $$->scope = 1; /* hack, 0 is no filter */ }
- | lsadb_args TYPE NUM { $$ = $1; $$->type = $3; }
+ | lsadb_args TYPE expr { $$ = $1; $$->type = $3; }
  | lsadb_args LSID idval { $$ = $1; $$->lsid = $3; }
  | lsadb_args SELF { $$ = $1; $$->router = SH_ROUTER_SELF; }
  | lsadb_args ROUTER idval { $$ = $1; $$->router = $3; }

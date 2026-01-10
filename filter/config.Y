@@ -367,11 +367,12 @@ CF_KEYWORDS(FUNCTION, PRINT, PRINTN, UNSET, RETURN,
 	IF, THEN, ELSE, CASE,
 	FOR, IN, DO,
 	TRUE, FALSE, RT, RO, UNKNOWN, GENERIC,
-	FROM, GW, NET, PROTO, SCOPE, DEST, IFNAME, IFINDEX, WEIGHT, GW_MPLS,
+	FROM, GW, NET, PROTO, SCOPE, DEST, IFNAME, IFINDEX, WEIGHT, GW_MPLS, ONLINK,
 	ROA_CHECK, ASPA_CHECK,
 	DEFINED,
 	ADD, DELETE, RESET,
 	PREPEND,
+	APPEND,
 	EMPTY,
 	FILTER, WHERE, EVAL, ATTRIBUTE,
 	FROM_HEX,
@@ -462,7 +463,7 @@ bt_test_suite:
 
 conf: bt_test_same ;
 bt_test_same:
- BT_TEST_SAME '(' CF_SYM_KNOWN ',' CF_SYM_KNOWN ',' NUM ')' {
+ BT_TEST_SAME '(' symbol_known ',' symbol_known ',' expr ')' {
   cf_assert_symbol($3, SYM_FUNCTION);
   cf_assert_symbol($5, SYM_FUNCTION);
   struct f_bt_test_suite *t = cfg_allocz(sizeof(struct f_bt_test_suite));
@@ -658,7 +659,12 @@ cmds_int: cmd_prep
  ;
 
 /*
- * Complex types, their bison value is struct f_val
+ * IP prefixes, their value is struct f_val
+ *
+ * Note that there is an ambiquity as 192.0.2.0/24 can be parsed either as an IP
+ * prefix (net_ip4_), or as an IP address divided by a number (term). We force
+ * the first interpretation by setting IP4 -> fipa reduction as lower priority
+ * than the token '/' (in net_ip4_).
  */
 fipa:
    IP4 %prec PREFIX_DUMMY { $$.type = T_IP; $$.val.ip = ipa_from_ip4($1); }
@@ -821,7 +827,7 @@ bgp_path_tail:
  | '[' ']' bgp_path_tail { $$ = f_new_inst(FI_CONSTANT, (struct f_val) { .type = T_PATH_MASK_ITEM, .val.pmi = { .set = NULL, .kind = PM_ASN_SET }, }); $$->next = $3; }
  | '[' set_items ']' bgp_path_tail {
    if ($2->from.type != T_INT) cf_error("Only integer sets allowed in path mask");
-   $$ = f_new_inst(FI_CONSTANT, (struct f_val) { .type = T_PATH_MASK_ITEM, .val.pmi = { .set = build_tree($2), .kind = PM_ASN_SET }, }); $$->next = $4;
+   $$ = f_new_inst(FI_CONSTANT, (struct f_val) { .type = T_PATH_MASK_ITEM, .val.pmi = { .set = build_tree($2, true), .kind = PM_ASN_SET }, }); $$->next = $4;
  }
  | '*' bgp_path_tail		{ $$ = f_new_inst(FI_CONSTANT, (struct f_val) { .type = T_PATH_MASK_ITEM, .val.pmi = { .kind = PM_ASTERISK }, }); $$->next = $2; }
  | '?' bgp_path_tail		{ $$ = f_new_inst(FI_CONSTANT, (struct f_val) { .type = T_PATH_MASK_ITEM, .val.pmi = { .kind = PM_QUESTION }, }); $$->next = $2; }
@@ -842,7 +848,7 @@ constant:
  | '[' ']' { $$ = f_new_inst(FI_CONSTANT, (struct f_val) { .type = T_SET, .val.t = NULL, }); }
  | '[' set_items ']' {
      DBG( "We've got a set here..." );
-     $$ = f_new_inst(FI_CONSTANT, (struct f_val) { .type = T_SET, .val.t = build_tree($2), });
+     $$ = f_new_inst(FI_CONSTANT, (struct f_val) { .type = T_SET, .val.t = build_tree($2, true), });
      DBG( "ook\n" );
  }
  | '[' fprefix_set ']' { $$ = f_new_inst(FI_CONSTANT, (struct f_val) { .type = T_PREFIX_SET, .val.ti = $2, }); }
@@ -899,6 +905,7 @@ static_attr:
  | IFINDEX { $$ = f_new_static_attr(T_INT,        SA_IFINDEX,	1); }
  | WEIGHT  { $$ = f_new_static_attr(T_INT,        SA_WEIGHT,	0); }
  | GW_MPLS { $$ = f_new_static_attr(T_INT,        SA_GW_MPLS,	0); }
+ | ONLINK  { $$ = f_new_static_attr(T_BOOL,       SA_ONLINK,    0); }
  ;
 
 term_dot_method: term '.' { f_method_call_start($1); } method_name_cont { f_method_call_end(); $$ = $4; };
@@ -959,9 +966,12 @@ term:
  | '-' '-' '-' EMPTY '-' '-' '-' { $$ = f_new_inst(FI_CONSTANT, f_get_empty(T_LCLIST)); }
 
  | PREPEND '(' term ',' term ')' { $$ = f_dispatch_method_x("prepend", $3->type, $3, $5); }
+ | APPEND '(' term ',' term ')' { $$ = f_dispatch_method_x("append", $3->type, $3, $5); }
  | ADD '(' term ',' term ')' { $$ = f_dispatch_method_x("add", $3->type, $3, $5); }
  | DELETE '(' term ',' term ')' { $$ = f_dispatch_method_x("delete", $3->type, $3, $5); }
  | FILTER '(' term ',' term ')' { $$ = f_dispatch_method_x("filter", $3->type, $3, $5); }
+
+ | term PP term { $$ = f_dispatch_method_x("append", $1->type, $1, $3); }
 
  | ROA_CHECK '(' rtable ')' { $$ = f_implicit_roa_check($3); }
  | ROA_CHECK '(' rtable ',' term ',' term ')' { $$ = f_new_inst(FI_ROA_CHECK, $5, $7, $3); }

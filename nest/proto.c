@@ -766,7 +766,8 @@ channel_start_import(struct channel *c)
   rt_request_import(c->table, &c->in_req);
 }
 
-void channel_notify_basic(void *);
+void channel_notify_any(void *);
+void channel_notify_optimal(void *);
 void channel_notify_accepted(void *);
 void channel_notify_merged(void *);
 
@@ -813,11 +814,11 @@ channel_start_export(struct channel *c)
 
   switch (c->ra_mode) {
     case RA_OPTIMAL:
-      c->out_event.hook = channel_notify_basic;
+      c->out_event.hook = channel_notify_optimal;
       rt_export_subscribe(c->table, best, &c->out_req);
       break;
     case RA_ANY:
-      c->out_event.hook = channel_notify_basic;
+      c->out_event.hook = channel_notify_any;
       rt_export_subscribe(c->table, all, &c->out_req);
       break;
     case RA_ACCEPTED:
@@ -1308,14 +1309,17 @@ channel_reconfigure(struct channel *c, struct channel_config *cf)
   if (import_changed && !channel_reloadable(c))
     return 0;
 
-  if (import_changed || export_changed)
-    log(L_INFO "Reloading channel %s.%s", c->proto->name, c->name);
-
   if (import_changed)
+  {
+    log(L_INFO "Reloading channel %s.%s for import", c->proto->name, c->name);
     channel_request_reload(c, NULL);
+  }
 
   if (export_changed)
+  {
+    log(L_INFO "Reloading channel %s.%s for export", c->proto->name, c->name);
     channel_refeed(c, NULL);
+  }
 
 done:
   CD(c, "Reconfigured");

@@ -348,6 +348,9 @@ dump_to_file_write(struct dump_request *dr, const char *fmt, ...)
       dump_to_file_flush(req);
   }
 
+  if (req->fd < 0)
+    return;
+
   bug("Too long dump call");
 }
 
@@ -580,7 +583,12 @@ sockaddr_read6(struct sockaddr_in6 *sa, ip_addr *a, struct iface **ifa, uint *po
   *a = ipa_from_in6(sa->sin6_addr);
 
   if (ifa && ipa_is_link_local(*a))
+  {
     *ifa = if_find_by_index(sa->sin6_scope_id);
+    if (!*ifa)
+      log(L_WARN "SOCK: Failed to resolve interface ID %d of link-local address %I",
+	  sa->sin6_scope_id, *a);
+  }
 }
 
 int
@@ -1212,13 +1220,37 @@ sk_reallocate(sock *s)
   sk_alloc_bufs(s);
 }
 
-static void
+void
 sk_dump(struct dump_request *dreq, resource *r)
 {
   sock *s = (sock *) r;
   static char *sk_type_names[] = { "TCP<", "TCP>", "TCP", "UDP", NULL, "IP", NULL, "MAGIC", "UNIX<", "UNIX", "SSH>", "SSH", "DEL!" };
 
   RDUMP("(%s, ud=%p, sa=%I, sp=%d, da=%I, dp=%d, tos=%d, ttl=%d, if=%s)\n",
+	sk_type_names[s->type],
+	s->data,
+	s->saddr,
+	s->sport,
+	s->daddr,
+	s->dport,
+	s->tos,
+	s->ttl,
+	s->iface ? s->iface->name : "none");
+}
+
+int sk_max_dump_len = sizeof("(%s, ud=%p, sa=%I, sp=%d, da=%I, dp=%d, tos=%d, ttl=%d, if=%s)\n") \
+  + 3 /* max sk_type_name = 5 */ \
+  + 14 /* looks like %p size is 16 */ \
+  + (IP6_MAX_TEXT_LENGTH -2) * 2 \
+  + 14 * 4 /* %d lengths */ \
+  + IFNAMSIZ - 2;
+
+void
+sk_dump_to_buffer(buffer *buf, sock *s)
+{
+  static char *sk_type_names[] = { "TCP<", "TCP>", "TCP", "UDP", NULL, "IP", NULL, "MAGIC", "UNIX<", "UNIX", "SSH>", "SSH", "DEL!" };
+
+  buffer_print(buf, "(%s, ud=%p, sa=%I, sp=%d, da=%I, dp=%d, tos=%d, ttl=%d, if=%s)\n",
 	sk_type_names[s->type],
 	s->data,
 	s->saddr,
@@ -1458,12 +1490,27 @@ sk_passive_connected(sock *s, int type)
 
   if (type == SK_TCP)
   {
+    struct iface *sifa = NULL, *difa = NULL;
     if ((getsockname(fd, &loc_sa.sa, &loc_sa_len) < 0) ||
-	(sockaddr_read(&loc_sa, s->af, &t->saddr, &t->iface, &t->sport) < 0))
+	(sockaddr_read(&loc_sa, s->af, &t->saddr, &sifa, &t->sport) < 0))
       log(L_WARN "SOCK: Cannot get local IP address for TCP<");
 
-    if (sockaddr_read(&rem_sa, s->af, &t->daddr, &t->iface, &t->dport) < 0)
+    if (sockaddr_read(&rem_sa, s->af, &t->daddr, &difa, &t->dport) < 0)
       log(L_WARN "SOCK: Cannot get remote IP address for TCP<");
+
+    if (sifa && difa && (sifa != difa))
+      log(L_WARN "SOCK: Interface collision for TCP<, got src %I%J, dst %I%J",
+	  t->saddr, sifa, t->daddr, difa);
+
+    if (s->iface && sifa && (sifa != s->iface))
+      log(L_WARN "SOCK: Interface collision for TCP<%J, got src %I%J",
+	  s->iface, t->saddr, sifa);
+
+    if (s->iface && difa && (difa != s->iface))
+      log(L_WARN "SOCK: Interface collision for TCP<%J, got dst %I%J",
+	  s->iface, t->daddr, difa);
+
+    t->iface = s->iface ?: difa ?: sifa;
   }
 
   if (sk_setup(t) < 0)
@@ -1570,7 +1617,7 @@ sk_ssh_connect(sock *s)
 	break;
 
       case SSH_KNOWN_HOSTS_OTHER:
-	LOG_WARN_ABOUT_SSH_SERVER_VALIDATION(s, "The server gave use a key of a type while we had another type recorded. " \
+	LOG_WARN_ABOUT_SSH_SERVER_VALIDATION(s, "The server gave use a key of a different type than we have recorded. " \
 					     "It is a possible attack.");
 	server_identity_is_ok = 0;
 	break;
@@ -2200,7 +2247,7 @@ sk_send(sock *s, unsigned len)
 
   int e = sk_maybe_write(s);
   if (e == 0) /* Trigger thread poll reload to poll this socket's write. */
-    socket_changed(s);
+    socket_changed(s, false);
 
   return e;
 }
@@ -2448,48 +2495,6 @@ sk_err(sock *s, int revents)
   s->err_hook(s, se);
   tmp_flush();
 }
-
-
-/* FIXME: these two functions should actually call bird_thread_sync_all()
- * to get threads from all loops. Now they dump just mainloop. */
-
-void
-sk_dump_all(struct dump_request *dreq)
-{
-  node *n;
-  sock *s;
-
-  RDUMP("Open sockets:\n");
-  dreq->indent += 3;
-  WALK_LIST(n, main_birdloop.sock_list)
-  {
-    s = SKIP_BACK(sock, n, n);
-    RDUMP("%p ", s);
-    sk_dump(dreq, &s->r);
-  }
-  dreq->indent -= 3;
-  RDUMP("\n");
-}
-
-void
-sk_dump_ao_all(struct dump_request *dreq)
-{
-  RDUMP("TCP-AO listening sockets:\n");
-  WALK_LIST_(node, n, main_birdloop.sock_list)
-  {
-    sock *s = SKIP_BACK(sock, n, n);
-
-    /* Skip non TCP-AO sockets / not supported */
-    if (sk_get_ao_info(s, &(struct ao_info){}) < 0)
-      continue;
-
-    RDUMP("\n%p", s);
-    sk_dump(dreq, &s->r);
-    sk_dump_ao_info(s, dreq);
-    sk_dump_ao_keys(s, dreq);
-  }
-}
-
 
 /*
  *	Internal event log and watchdog

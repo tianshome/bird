@@ -726,6 +726,9 @@
 	    case SA_GW_MPLS:
 	      RESULT(sa.type, i, (nh && nh->labels) ? nh->label[0] : MPLS_NULL);
 	      break;
+	    case SA_ONLINK:
+	      RESULT(sa.type, i, (nh && !!(nh->flags & RNF_ONLINK)));
+	      break;
 	    default:
 	      bug("Invalid static attribute access (%u/%u)", sa.type, sa.sa_code);
 	  }
@@ -774,10 +777,11 @@
 	  struct nexthop *first = NEXTHOP_IS_REACHABLE(nhad) ? &(nhad->nh) : NULL;
 
 	  ip_addr ip = v1.val.ip;
-	  struct iface *ifa = (ipa_is_link_local(ip) && first) ? first->iface : NULL;
+	  bool onlink = first && (first->flags & RNF_ONLINK);
+	  struct iface *ifa = ((ipa_is_link_local(ip) || onlink) && first) ? first->iface : NULL;
 	  
 	  /* XXX this code supposes that every owner is a protocol XXX */
-	  neighbor *n = neigh_find(SKIP_BACK(struct proto, sources, fs->rte->src->owner), ip, ifa, 0);
+	  neighbor *n = neigh_find(SKIP_BACK(struct proto, sources, fs->rte->src->owner), ip, ifa, onlink ? NEF_ONLINK : 0);
 	  if (!n || (n->scope == SCOPE_HOST))
 	    runtime( "Invalid gw address" );
 
@@ -841,6 +845,33 @@
 	  /* Set weight on all next hops */
 	  NEXTHOP_WALK(nh, nhax)
 	    nh->weight = i - 1;
+
+	  a = ea_set_attr(&fs->rte->attrs,
+	      EA_LITERAL_DIRECT_ADATA(&ea_gen_nexthop, 0, &nhax->ad));
+        }
+	break;
+
+      case SA_ONLINK:
+        {
+	  int i = v1.val.i;
+
+	  struct eattr *nh_ea = ea_find(fs->rte->attrs, &ea_gen_nexthop);
+	  if (!nh_ea)
+	    runtime( "Set iface first to make the nexthop onlink" );
+
+	  struct nexthop_adata *nhad = (struct nexthop_adata *) nh_ea->u.ptr;
+	  if (!NEXTHOP_IS_REACHABLE(nhad))
+	    runtime( "Set iface first to make the nexthop onlink" );
+
+	  struct nexthop_adata *nhax = (struct nexthop_adata *) tmp_copy_adata(&nhad->ad);
+
+	  /* Set onlink on all next hops */
+	  if (i)
+	    NEXTHOP_WALK(nh, nhax)
+	      nh->flags |=  RNF_ONLINK;
+	  else
+	    NEXTHOP_WALK(nh, nhax)
+	      nh->flags &= ~RNF_ONLINK;
 
 	  a = ea_set_attr(&fs->rte->attrs,
 	      EA_LITERAL_DIRECT_ADATA(&ea_gen_nexthop, 0, &nhax->ad));
@@ -1225,7 +1256,10 @@
     }
 
     /* Balance the tree */
-    item->tree = build_tree(whati->tree);
+    item->tree = build_tree(whati->tree, false);
+
+    if (whati->tree && !item->tree)
+      cf_error("Overlaping intervals in switch cases not allowed");
 
     FID_ITERATE_BODY()
     tree_walk(whati->tree, f_add_tree_lines, fit);
@@ -1259,6 +1293,22 @@
     ARG(2, T_INT);
     METHOD_CONSTRUCTOR("prepend");
     RESULT(T_PATH, ad, [[ as_path_prepend(fpool, v1.val.ad, v2.val.i) ]]);
+  }
+
+  /* String append */
+  INST(FI_STRING_APPEND, 2, 1) {
+    ARG(1, T_STRING);
+    ARG(2, T_STRING);
+    METHOD_CONSTRUCTOR("append");
+    RESULT(T_STRING, s, [[ lp_strcat(fpool, v1.val.s, v2.val.s) ]]);
+  }
+
+  /* Bytestring append */
+  INST(FI_BYTESTRING_APPEND, 2, 1) {
+    ARG(1, T_BYTESTRING);
+    ARG(2, T_BYTESTRING);
+    METHOD_CONSTRUCTOR("append");
+    RESULT(T_BYTESTRING, ad, [[ bytestring_append(fpool, v1.val.ad, v2.val.ad) ]]);
   }
 
   /* Community list add */

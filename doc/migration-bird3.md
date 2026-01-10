@@ -13,7 +13,8 @@ that to fix some historically inaccurate concepts.
 
 Number of working threads is now configured by `threads <num>;` on toplevel.
 By default, this is 1, which actually means 2 running threads. The main one and
-the worker one. When BFD is configured, you get another one for BFD.
+the worker one. When BFD is configured, you get another one for BFD. This option
+is also available in BIRD 2 with no effect so that you may downgrade easier if you need.
 
 Every instance of BGP, BFD, Pipe and RPKI gets its own *loop* which is a packed
 unit transferrable between the working threads.
@@ -32,7 +33,9 @@ Also this option is by far the fastest one.
 ## Tables
 
 It's now possible to set the `debug` option to trace events happening directly
-inside the table.
+inside the table, and there is a global `debug tables` option similar to `debug
+protocols`. This global option is also available in BIRD 2 with no effect
+for downgrade compatibility.
 
 Also settle timers were changed; there is a configurable idle-state timeout
 before any route export is announced after import is done. This helps to
@@ -72,10 +75,11 @@ All protocol attributes have been renamed in CLI to align with the filter langua
 Output of `show route all` also shows more information, including some internal
 data for easier debugging and route tracing.
 
-The `onlink` route attribute has been temporarily disabled until we find out
-how to implement it properly.
-
 The `scope` route attribute has been removed. Use custom route attributes instead.
+
+The `from` route attribute is set only if it's relevant, therefore some of
+the filters may refuse to process routes if relying on the default zero value.
+Now it's possible to check for `defined(from)` in filters before using it.
 
 ## Protocols common
 

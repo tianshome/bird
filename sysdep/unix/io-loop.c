@@ -392,7 +392,7 @@ sockets_init(struct birdloop *loop)
 }
 
 void
-socket_changed(sock *s)
+socket_changed(struct birdsock *s, bool recalculate_sk_info)
 {
   struct birdloop *loop = s->loop;
   ASSERT_DIE(birdloop_inside(loop));
@@ -400,6 +400,38 @@ socket_changed(sock *s)
   LOOP_TRACE(loop, DL_SOCKETS, "socket %p changed", s);
   loop->sock_changed = 1;
   birdloop_ping(loop);
+
+  if (loop != &main_birdloop && recalculate_sk_info)
+  {
+    int size = loop->sock_num * sk_max_dump_len + 17;
+    char *new_info = mb_alloc(loop->pool, size);
+
+    node *n;
+    buffer buf = {
+      .start = new_info,
+      .pos = new_info,
+      .end = new_info + size,
+    };
+
+    buffer_print(&buf, "%p ", s);
+
+    WALK_LIST(n, loop->sock_list)
+    {
+      SKIP_BACK_DECLARE(sock, s, n, n);
+      sk_dump_to_buffer(&buf, s);
+    }
+    buf.pos[0] = '\0';
+
+    char *old_info = NULL;
+    if (loop->sockets_info)
+      old_info = atomic_load_explicit(&loop->sockets_info, memory_order_relaxed);
+    atomic_store_explicit(&loop->sockets_info, new_info, memory_order_relaxed);
+
+    synchronize_rcu(); // We are about to free old_info, which might be in use in dumping right now
+
+    if (old_info)
+      mb_free(old_info);
+  }
 }
 
 void
@@ -415,7 +447,7 @@ birdloop_add_socket(struct birdloop *loop, sock *s)
   s->loop = loop;
   s->index = -1;
 
-  socket_changed(s);
+  socket_changed(s, true);
 }
 
 extern sock *stored_sock; /* mainloop hack */
@@ -443,7 +475,7 @@ birdloop_remove_socket(struct birdloop *loop, sock *s)
   rem_node(&s->n);
   loop->sock_num--;
 
-  socket_changed(s);
+  socket_changed(s, true);
 
   s->loop = NULL;
   s->index = -1;
@@ -467,7 +499,7 @@ sk_pause_rx(struct birdloop *loop, sock *s)
 {
   ASSERT_DIE(birdloop_inside(loop));
   s->rx_hook = NULL;
-  socket_changed(s);
+  socket_changed(s, false);
 }
 
 void
@@ -476,7 +508,7 @@ sk_resume_rx(struct birdloop *loop, sock *s, int (*hook)(sock *, uint))
   ASSERT_DIE(birdloop_inside(loop));
   ASSERT_DIE(hook);
   s->rx_hook = hook;
-  socket_changed(s);
+  socket_changed(s, false);
 }
 
 static inline uint sk_want_events(sock *s)
@@ -977,9 +1009,8 @@ bird_thread_main(void *arg)
 
       WALK_TLIST(birdloop, loop, &thr->loops)
       {
-	birdloop_enter(loop);
+	BIRDLOOP_ENTER(loop);
 	sockets_prepare(loop, &pfd);
-	birdloop_leave(loop);
       }
 
       ASSERT_DIE(pfd.loop.used == pfd.pfd.used);
@@ -1058,7 +1089,7 @@ bird_thread_group_done(thread_group *gpub, TLIST_LIST(birdloop) *leftover_loops)
   while (!EMPTY_TLIST(birdloop, leftover_loops))
   {
     struct birdloop *loop = THEAD(birdloop, leftover_loops);
-    birdloop_enter(loop);
+    BIRDLOOP_ENTER(loop);
     if (loop->thread_group == gpub)
     {
       birdloop_transfer(loop, gpub, default_thread_group);
@@ -1066,7 +1097,6 @@ bird_thread_group_done(thread_group *gpub, TLIST_LIST(birdloop) *leftover_loops)
 
     birdloop_rem_node(leftover_loops, loop);
     birdloop_set_thread(loop, NULL);
-    birdloop_leave(loop);
   }
 
   thread_group_rem_node(&global_thread_group_list, gpub);
@@ -1291,7 +1321,7 @@ static void
 bird_thread_stop(thread_group *gpub, struct config *old_config)
 {
   struct birdloop *tdl = birdloop_new(&root_pool, DOMAIN_ORDER(control), gpub, "Thread dropper");
-  birdloop_enter(tdl);
+  BIRDLOOP_ENTER(tdl);
 
   TG_LOCKED(gpub, group)
   {
@@ -1302,8 +1332,6 @@ bird_thread_stop(thread_group *gpub, struct config *old_config)
     OBSREF_SET(group->thread_dropper.conflock, old_config);
     ev_send_loop(tdl, &group->thread_dropper.event);
   }
-
-  birdloop_leave(tdl);
 }
 
 void
@@ -1511,7 +1539,6 @@ bird_thread_sync_all(struct bird_thread_syncer *sync,
   UNLOCK_DOMAIN(control, sync->lock);
 }
 
-
 struct bird_thread_show_data {
   struct bird_thread_syncer sync;
   cli *cli;
@@ -1670,6 +1697,181 @@ cmd_show_threads(int show_loops)
 
   bird_thread_sync_all(&tsd->sync, bird_thread_show, cmd_show_threads_done, "Show Threads");
 }
+
+
+/*
+  sk_dump_all uses cached info, because we need the dupms quickly and locking
+  (especially for thread_group loops) would be too complicated and slow.
+
+  sk_dump_ao_all has a different approach - in each thread we send an event to each loop
+  and dump from the loops. We do this because ao dump changes much more often and caching
+  would be too frequent. This means ao dump is slower than basic socket dump
+  and the basic socket dump should be used for quick debugging.
+*/
+
+void
+sk_dump_all(struct dump_request *dreq)
+{
+  RDUMP("Open sockets:\n");
+  dreq->indent += 3;
+
+  node *n;
+  sock *s;
+
+  /* Dump sockets in main_birdloop */
+  WALK_LIST(n, main_birdloop.sock_list)
+  {
+    s = SKIP_BACK(sock, n, n);
+    RDUMP("%p ", s);
+    sk_dump(dreq, &s->r);
+  }
+
+  /* The rest of birdloops have the socket info cached */
+  WALK_TLIST(thread_group, gpub, &global_thread_group_list)
+    TG_LOCKED(gpub, group)
+      WALK_TLIST(thread, thr, &group->threads)
+        WALK_TLIST(birdloop, loop, &thr->loops)
+        {
+          /* The socket_info might be about to change (and free previous version) right now */
+          rcu_read_lock();
+            char *info = atomic_load_explicit(&loop->sockets_info, memory_order_relaxed);
+
+            if (info)
+              RDUMP(info);
+          rcu_read_unlock();
+        }
+
+  WALK_TLIST_DELSAFE(thread_group, gpub, &global_thread_group_list)
+  TG_LOCKED(gpub, group)
+  {
+    WALK_TLIST_DELSAFE(birdloop, loop, &group->loops)
+    {
+      rcu_read_lock();
+        char *info = atomic_load_explicit(&loop->sockets_info, memory_order_relaxed);
+      rcu_read_unlock();
+      if (info)
+        RDUMP(info);
+    }
+  }
+  dreq->indent -= 3;
+  RDUMP("\n");
+}
+
+
+struct bird_show_ao_socket {
+  struct bird_thread_syncer sync;
+  struct dump_request *dreq;
+  DOMAIN(rtable) lock;
+  struct pool *pool;
+
+  _Atomic int dump_finished; // the dump is finished when reached zero
+};
+
+struct sk_dump_ao_event {
+  event event;
+  struct bird_show_ao_socket *bsas;
+};
+
+static void
+_sk_dump_ao_for_loop(struct bird_show_ao_socket *bsas, list sock_list)
+{
+  struct dump_request *dreq = bsas->dreq;
+
+  WALK_LIST_(node, n, sock_list)
+  {
+    sock *s = SKIP_BACK(sock, n, n);
+
+    /* Skip non TCP-AO sockets / not supported */
+    if (sk_get_ao_info(s, &(struct ao_info){}) < 0)
+      continue;
+
+    RDUMP("\n%p", s);
+    sk_dump(dreq, &s->r);
+    sk_dump_ao_info(s, dreq);
+    sk_dump_ao_keys(s, dreq);
+  }
+
+  if (atomic_fetch_sub_explicit(&bsas->dump_finished, 1, memory_order_relaxed) == 1)
+  {
+    RDUMP("\n");
+    mb_free(bsas);
+  }
+}
+
+static void
+sk_dump_ao_for_loop(void *data)
+{
+  struct sk_dump_ao_event *sdae = (struct sk_dump_ao_event*) data;
+  _sk_dump_ao_for_loop(sdae->bsas, birdloop_current->sock_list);
+}
+
+static void
+_sk_dump_ao_send_event(struct bird_show_ao_socket *bsas)
+{
+  WALK_TLIST(birdloop, loop, &this_thread->loops)
+  {
+    struct sk_dump_ao_event *sdae = mb_allocz(bsas->pool, sizeof(struct sk_dump_ao_event));
+    sdae->event.hook = sk_dump_ao_for_loop;
+    sdae->event.data = sdae;
+    sdae->bsas = bsas;
+    ev_send_loop(loop, &sdae->event);
+  }
+}
+
+static void
+sk_dump_ao_send_event(struct bird_thread_syncer *sync)
+{
+  SKIP_BACK_DECLARE(struct bird_show_ao_socket, bsas, sync, sync);
+  LOCK_DOMAIN(rtable, bsas->lock);
+  _sk_dump_ao_send_event(bsas);
+  UNLOCK_DOMAIN(rtable, bsas->lock);
+}
+
+static void
+sk_dump_ao_thread_sync_done(struct bird_thread_syncer *sync)
+{
+  SKIP_BACK_DECLARE(struct bird_show_ao_socket, bsas, sync, sync);
+
+  if (atomic_fetch_sub_explicit(&bsas->dump_finished, 1, memory_order_relaxed) == 1)
+  {
+    struct dump_request *dreq = bsas->dreq;
+    RDUMP("\n");
+    DOMAIN(rtable) lock = bsas->lock;
+    LOCK_DOMAIN(rtable, lock);
+    mb_free(bsas->pool);
+    UNLOCK_DOMAIN(rtable, lock);
+  }
+}
+
+void
+sk_dump_ao_all(struct dump_request *dreq)
+{
+  DOMAIN(rtable) lock = DOMAIN_NEW(rtable);
+  LOCK_DOMAIN(rtable, lock);
+
+  pool *pool = rp_new(&root_pool, lock.rtable, "Dump socket TCP-AO");
+
+  struct bird_show_ao_socket *bsas = mb_allocz(pool, sizeof(struct bird_show_ao_socket));
+  bsas->dreq = dreq;
+  bsas->lock = lock;
+  bsas->pool = pool;
+  atomic_store_explicit(&bsas->dump_finished, 1, memory_order_relaxed);
+
+  RDUMP("TCP-AO listening sockets:\n");
+  _sk_dump_ao_for_loop(bsas, main_birdloop.sock_list);
+
+  WALK_TLIST(thread_group, gpub, &global_thread_group_list)
+  TG_LOCKED(gpub, group)
+  {
+    WALK_TLIST(birdloop, loop, &group->loops)
+      _sk_dump_ao_send_event(bsas);
+  }
+
+  UNLOCK_DOMAIN(rtable, lock);
+
+  bird_thread_sync_all(&bsas->sync, sk_dump_ao_send_event, sk_dump_ao_thread_sync_done, "Show ao sockets");
+}
+
 
 bool task_still_in_limit(void)
 {
@@ -2061,6 +2263,13 @@ birdloop_leave(struct birdloop *loop)
 {
   birdloop_leave_locked(loop);
   DG_UNLOCK(loop->time.domain);
+}
+
+void
+birdloop_leave_cleanup(struct birdloop **loop)
+{
+  if (*loop)
+    birdloop_leave(*loop);
 }
 
 void

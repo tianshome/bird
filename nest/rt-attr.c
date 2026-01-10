@@ -66,6 +66,11 @@ struct ea_class ea_gen_igp_metric = {
   .type = T_INT,
 };
 
+struct ea_class ea_gen_local_metric = {
+  .name = "local_metric",
+  .type = T_INT,
+};
+
 struct ea_class ea_gen_preference = {
   .name = "preference",
   .type = T_INT,
@@ -1323,10 +1328,10 @@ ea_show(struct cli *c, const eattr *e)
     switch (e->type)
       {
 	case T_INT:
-	  if ((cls == &ea_gen_igp_metric) && e->u.data >= IGP_METRIC_UNKNOWN)
-	    return;
-
-	  bsprintf(pos, "%u", e->u.data);
+	  if ((cls == &ea_gen_local_metric) && e->u.data >= IGP_METRIC_UNKNOWN)
+	    bsprintf(pos, "unknown");
+	  else
+	    bsprintf(pos, "%u", e->u.data);
 	  break;
 	case T_OPAQUE:
 	  opaque_format(ad, pos, end - pos);
@@ -1341,13 +1346,13 @@ ea_show(struct cli *c, const eattr *e)
 	  as_path_format(ad, pos, end - pos);
 	  break;
 	case T_CLIST:
-	  ea_show_int_set(c, cls->name, ad, ISF_COMMUNITY_LIST, buf);
+	  ea_show_int_set(c, name, ad, ISF_COMMUNITY_LIST, buf);
 	  return;
 	case T_ECLIST:
-	  ea_show_ec_set(c, cls->name, ad, buf);
+	  ea_show_ec_set(c, name, ad, buf);
 	  return;
 	case T_LCLIST:
-	  ea_show_lc_set(c, cls->name, ad, buf);
+	  ea_show_lc_set(c, name, ad, buf);
 	  return;
 	case T_STRING:
 	  bsnprintf(pos, end - pos, "%s", (const char *) ad->data);
@@ -1744,6 +1749,7 @@ rta_init(void)
   /* Other generic route attributes */
   ea_register_init(&ea_gen_preference);
   ea_register_init(&ea_gen_igp_metric);
+  ea_register_init(&ea_gen_local_metric);
   ea_register_init(&ea_gen_from);
   ea_register_init(&ea_gen_source);
   ea_register_init(&ea_gen_flowspec_valid);

@@ -1,46 +1,10 @@
-Version 3.1.5 (2025-12-04)
-  o Babel, OSPF, RIP: Fix crash on interface reconfiguration
-  o RAdv: Fix flags for deprecated prefixes
-  o MRT: Fix dumps with layered attibutes
-  o MRT: Fix crash when protocol mrtdump configured without a specified file
-  o Filters: Fix undefined memory access in nexthop handling
-  o BSD: Fix export of non-multipath routes
-  o Conf: Fix thread groups.
-  o Conf: Implicit symbols should not generate warnings when overriding keywords
-
-Version 3.1.4 (2025-09-22)
-  o BGP: Fixed crash on Notification with a message
-  o BGP: Fixed invalid memory access in pending TX flush
-  o BGP: Fixed a rare bug with listening socket delay
-  o Pipe: Disabled statisticts for stopping pipe
-  o Hash: Read-only assertions
-  o ROA Aggregator: Fixed crash on multiwithdraw
-  o Protocol: Fixed broken state announcements
-
-Version 3.1.3 (2025-09-03)
-  o ASPA check fix for AS_SET
-
-Version 3.1.2 (2025-05-26)
-  o BGP: Fix warnings for roa_check
-  o MRT: Fix typo in assert
-  o ASPA: Fix table subscriptions
-  o ASPA: Fix filter parse crash
-  o Table: Fix several race conditions
-  o Shutdown: Do not export routes
-  o Logs: Fix logs reopening on configure undo
-
-Version 3.1.1 (2025-05-13)
-  o Makefile: Fix accidentally added dry-run markers
-  o BGP: Fix route refresh behavior
-  o BGP: Fix reconfiguration of import behavior modifiers
-  o BGP: Fix crash on too long export
-  o Conf: Fix invalid check in text_or_ipa grammar
-  o Netlink: Fix FreeBSD build error
-  o Fix use-after-free in thread group reconfiguration
-  o Fix CentOS 7 and NetBSD build
-  o Fix several crashes in table export (already fixed in 3.0.2)
-  o Fix crash on graceful restart of a channel with ROA subscription
-  o Lots of internal tooling and CI updates
+Version 3.2.0 (2025-12-26)
+  o BGP: Listening socket rework
+  o IGP metric: Split out local_metric again
+  o Table: Optimal and Any Export refactoring
+  o Various race condition fixes
+  o All fixes included in 3.1.0 -- 3.1.5
+  o Merged 2.18
 
 Version 3.1.0 (2025-04-01)
   o CLI v2 compatibility layer for show route
@@ -124,6 +88,21 @@ Version 3.0-alpha0 (2022-02-07)
   o Parallel BGP protocol
   o Lots of refactoring
   o Bugfixes and improvements as they came along
+
+Version 2.18 (2025-12-26)
+  o BGP: Support for dynamic onlink and link-local connections
+  o BGP: Listening socket refactoring
+  o BGP: Fix restart behavior on outgoing next hop setting
+  o BGP: Configuring global/link-local IPv6 nexthop
+  o BGP: Disallow AS Sets by default
+  o L3VPN: Support for import/export target none and import target all
+  o RAdv: P-flag to prefer prefix delegation in DHCPv6
+  o Filter: Merging of case intervals
+  o Filter: Append operator
+  o ASPA: Paths containing AS_SET are invalid
+  o Doc: Update website to bird.nic.cz
+  o CI: Upstream packaging cleanup and reproducible builds
+  o Various minor fixes in code, comments, documentation and tooling
 
 Version 2.17.1 (2025-04-29)
   o BSD: Fix build on NetBSD

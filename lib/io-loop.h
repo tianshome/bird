@@ -57,12 +57,42 @@ struct timeloop *birdloop_time_loop(struct birdloop *loop);
 /* Get birdloop's pool */
 pool *birdloop_pool(struct birdloop *loop);
 
-/* Enter and exit the birdloop */
+/* Enter the birdloop, leave at the end of the block. */
+#define BIRDLOOP_ENTER(_loop) CLEANUP(birdloop_leave_cleanup) UNUSED struct birdloop *_loop_entered = (birdloop_enter(_loop), (_loop))
+
+/* Prematurely leave the birdloop */
+#define BIRDLOOP_LEAVE(_loop) (birdloop_leave_cleanup(&_loop), _loop = NULL);
+
+/* Auxiliary cleanup function for BIRDLOOP_ENTER */
+void birdloop_leave_cleanup(struct birdloop **);
+
+/* Structures similar to LOBJ_*, see lib/locking.h */
+#define BLO_UNLOCK_CLEANUP_NAME(_stem) _blo__##_stem##_unlock_cleanup
+#define BLO_UNLOCK_CLEANUP(_stem) \
+  static inline void BLO_UNLOCK_CLEANUP_NAME(_stem)(struct _stem##_private **obj) { \
+    if (!*obj) return; \
+    ASSERT_DIE(birdloop_inside((*obj)->loop)); \
+    ASSERT_DIE((*obj)->locked_at == obj); \
+    (*obj)->locked_at = NULL; \
+    birdloop_leave((*obj)->loop); \
+  }
+
+#define BLO_LOCK(_obj, _pobj, _stem) \
+  CLEANUP(BLO_UNLOCK_CLEANUP_NAME(_stem)) struct _stem##_private *_pobj = &(_obj)->priv; birdloop_enter(_pobj->loop); _pobj->locked_at = &_pobj;
+
+#define BLO_LOCKED(_obj, _pobj, _stem) \
+  for (CLEANUP(BLO_UNLOCK_CLEANUP_NAME(_stem)) struct _stem##_private *_pobj = &(_obj)->priv; \
+      _pobj ? (birdloop_enter(_pobj->loop), _pobj->locked_at = &_pobj) : NULL; \
+      BLO_UNLOCK_CLEANUP_NAME(_stem)(&_pobj), _pobj = NULL)
+
+/* Explicitly enter and exit the birdloop */
 void birdloop_enter(struct birdloop *loop);
 void birdloop_leave(struct birdloop *loop);
 
+/* Check whether we are actually inside a birdloop */
 bool birdloop_inside(struct birdloop *loop);
 
+/* Internal API, do not call */
 void birdloop_mask_wakeups(struct birdloop *loop);
 void birdloop_unmask_wakeups(struct birdloop *loop);
 
