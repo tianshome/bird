@@ -1,0 +1,105 @@
+name: Build deb packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to upload assets to (optional for manual runs)"
+        required: false
+        type: string
+
+jobs:
+  build-archive:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pull or build docbuilder image
+        run: |
+          set -euo pipefail
+          if docker pull registry.nic.cz/labs/bird:docbuilder; then
+            docker tag registry.nic.cz/labs/bird:docbuilder bird:docbuilder
+          else
+            docker build -t bird:docbuilder misc/docker/docbuilder
+          fi
+      - name: Create source archive
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD":/src -w /src bird:docbuilder \
+            bash -lc 'ARCHIVE_DOCS=false ./tools/make-archive'
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-archive
+          path: bird-*.tar.gz
+          if-no-files-found: error
+
+  build-deb:
+    needs: build-archive
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
+    strategy:
+      fail-fast: false
+      matrix:
+        distro:
+          - ubuntu-22.04-amd64
+          - ubuntu-24.04-amd64
+          - debian-12-amd64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Download source archive
+        uses: actions/download-artifact@v4
+        with:
+          name: source-archive
+          path: .
+      - name: Pull or build distro image
+        run: |
+          set -euo pipefail
+          if docker pull registry.nic.cz/labs/bird:${{ matrix.distro }}; then
+            docker tag registry.nic.cz/labs/bird:${{ matrix.distro }} bird:${{ matrix.distro }}
+          else
+            docker build -t bird:${{ matrix.distro }} misc/docker/${{ matrix.distro }}
+          fi
+      - name: Build deb packages
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD":/src -w /src "bird:${{ matrix.distro }}" bash -lc '
+            set -e
+            autoreconf
+            ./configure
+            make -j"$(nproc)"
+            make check
+            if python3 -m venv /tmp/venv; then . /tmp/venv/bin/activate; fi
+            pip3 install apkg
+            apkg build -a bird-$(cat VERSION)*.tar.gz
+          '
+      - name: Prefix deb filenames with distro
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in pkg/pkgs/*.deb; do
+            mv "$f" "pkg/pkgs/${{ matrix.distro }}-$(basename "$f")"
+          done
+      - name: Upload deb artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.distro }}
+          path: pkg/pkgs/*.deb
+          if-no-files-found: error
+      - name: Upload debs to GitHub Release
+        if: ${{ env.RELEASE_TAG != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" pkg/pkgs/*.deb --clobber
