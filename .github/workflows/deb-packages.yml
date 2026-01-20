@@ -85,18 +85,18 @@ jobs:
             pip3 install apkg
             apkg build -a bird-$(cat VERSION)*.tar.gz
           '
-      - name: Prefix deb filenames with distro
+      - name: Collect deb artifacts
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          for f in pkg/pkgs/*.deb; do
-            mv "$f" "pkg/pkgs/${{ matrix.distro }}-$(basename "$f")"
+          mkdir -p dist-debs
+          find pkg/pkgs -type f -name '*.deb' -print0 | while IFS= read -r -d '' f; do
+            cp "$f" "dist-debs/${{ matrix.distro }}-$(basename "$f")"
           done
       - name: Upload deb artifacts
         uses: actions/upload-artifact@v4
         with:
           name: deb-${{ matrix.distro }}
-          path: pkg/pkgs/*.deb
+          path: dist-debs/*.deb
           if-no-files-found: error
       - name: Upload debs to GitHub Release
         if: ${{ env.RELEASE_TAG != '' }}
@@ -104,4 +104,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release upload "$RELEASE_TAG" pkg/pkgs/*.deb --clobber
+          gh release upload "$RELEASE_TAG" dist-debs/*.deb --clobber
