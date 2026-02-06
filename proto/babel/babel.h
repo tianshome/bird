@@ -100,6 +100,7 @@ enum babel_subtlv_type {
   BABEL_SUBTLV_PADN		= 1,
   BABEL_SUBTLV_DIVERSITY	= 2, /* we don't support this */
   BABEL_SUBTLV_TIMESTAMP	= 3,
+  BABEL_SUBTLV_OWD		= 4,
 
   /* Mandatory subtlvs */
   BABEL_SUBTLV_SOURCE_PREFIX    = 128,
@@ -117,6 +118,11 @@ enum babel_iface_type {
 enum babel_next_hop_prefer {
   BABEL_NHP_NATIVE		= 0,
   BABEL_NHP_IP6			= 1,
+};
+
+enum babel_latency_mode {
+  BABEL_LATENCY_RTT		= 0,
+  BABEL_LATENCY_OWD		= 1,
 };
 
 enum babel_ae_type {
@@ -156,6 +162,7 @@ struct babel_iface_config {
   u16 rtt_cost;			/* metric penalty to apply at rtt_max */
   u16 rtt_decay;			/* decay of neighbour RTT (units of 1/256) */
   u8  rtt_send;			/* whether to send timestamps on this interface */
+  u8 latency_mode;			/* Latency metric source (BABEL_LATENCY_*) */
 
   u16 rx_buffer;			/* RX buffer size, 0 for MTU */
   u16 tx_length;			/* TX packet length limit (including headers), 0 for MTU */
@@ -249,6 +256,9 @@ struct babel_neighbor {
   u32 last_tstamp;
   btime last_tstamp_rcvd;
   btime srtt;
+  btime sowd_rx;
+  btime sowd_tx;
+  u8 owd_tx_valid;
 
   u32 auth_pc_unicast;
   u32 auth_pc_multicast;
@@ -360,6 +370,8 @@ struct babel_msg_ihu {
   ip_addr sender;
   u32 tstamp;
   u32 tstamp_rcvd;
+  u32 owd;
+  u8 owd_valid;
   btime pkt_received;
 };
 

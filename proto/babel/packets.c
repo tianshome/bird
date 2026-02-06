@@ -65,6 +65,12 @@ struct babel_subtlv_timestamp {
   u32 tstamp_rcvd; /* only used in IHU */
 } PACKED;
 
+struct babel_subtlv_owd {
+  u8 type;
+  u8 length;
+  u32 owd;
+} PACKED;
+
 struct babel_tlv_router_id {
   u8 type;
   u8 length;
@@ -346,6 +352,7 @@ static int babel_read_route_request(struct babel_tlv *hdr, union babel_msg *msg,
 static int babel_read_seqno_request(struct babel_tlv *hdr, union babel_msg *msg, struct babel_parse_state *state);
 static int babel_read_source_prefix(struct babel_tlv *hdr, union babel_msg *msg, struct babel_parse_state *state);
 static int babel_read_timestamp(struct babel_tlv *hdr, union babel_msg *msg, struct babel_parse_state *state);
+static int babel_read_owd(struct babel_tlv *hdr, union babel_msg *msg, struct babel_parse_state *state);
 
 static uint babel_write_ack(struct babel_tlv *hdr, union babel_msg *msg, struct babel_write_state *state, uint max_len);
 static uint babel_write_hello(struct babel_tlv *hdr, union babel_msg *msg, struct babel_write_state *state, uint max_len);
@@ -355,6 +362,7 @@ static uint babel_write_route_request(struct babel_tlv *hdr, union babel_msg *ms
 static uint babel_write_seqno_request(struct babel_tlv *hdr, union babel_msg *msg, struct babel_write_state *state, uint max_len);
 static int babel_write_source_prefix(struct babel_tlv *hdr, net_addr *net, uint max_len);
 static int babel_write_timestamp(struct babel_tlv *hdr, u32 tstamp, u32 tstamp_rcvd, uint max_len);
+static int babel_write_owd(struct babel_tlv *hdr, u32 owd, uint max_len);
 
 static const struct babel_tlv_data tlv_data[BABEL_TLV_MAX] = {
   [BABEL_TLV_ACK_REQ] = {
@@ -437,6 +445,13 @@ static const struct babel_tlv_data timestamp_tlv_data = {
   NULL
 };
 
+static const struct babel_tlv_data owd_tlv_data = {
+  sizeof(struct babel_subtlv_owd),
+  babel_read_owd,
+  NULL,
+  NULL
+};
+
 static const struct babel_tlv_data source_prefix_tlv_data = {
   sizeof(struct babel_subtlv_source_prefix),
   babel_read_source_prefix,
@@ -450,6 +465,8 @@ static const struct babel_tlv_data *get_packet_subtlv_data(u8 type)
   {
   case BABEL_SUBTLV_TIMESTAMP:
     return &timestamp_tlv_data;
+  case BABEL_SUBTLV_OWD:
+    return &owd_tlv_data;
   case BABEL_SUBTLV_SOURCE_PREFIX:
     return &source_prefix_tlv_data;
 
@@ -626,6 +643,15 @@ out:
   if (msg->tstamp)
   {
     int l = babel_write_timestamp(hdr, msg->tstamp, msg->tstamp_rcvd, max_len);
+    if (l < 0)
+      return 0;
+
+    len += l;
+  }
+
+  if (msg->owd_valid)
+  {
+    int l = babel_write_owd(hdr, msg->owd, max_len);
     if (l < 0)
       return 0;
 
@@ -1357,6 +1383,39 @@ babel_write_timestamp(struct babel_tlv *hdr, u32 tstamp, u32 tstamp_rcvd, uint m
   if (hdr->type == BABEL_TLV_IHU)
     put_u32(&tlv->tstamp_rcvd, tstamp_rcvd);
 
+  return len;
+}
+
+static int
+babel_read_owd(struct babel_tlv *hdr, union babel_msg *msg,
+	       struct babel_parse_state *state UNUSED)
+{
+  struct babel_subtlv_owd *tlv = (void *) hdr;
+
+  if (msg->type != BABEL_TLV_IHU)
+    return PARSE_ERROR;
+
+  if (tlv->length < 4)
+    return PARSE_ERROR;
+
+  msg->ihu.owd = get_u32(&tlv->owd);
+  msg->ihu.owd_valid = 1;
+  return PARSE_SUCCESS;
+}
+
+static int
+babel_write_owd(struct babel_tlv *hdr, u32 owd, uint max_len)
+{
+  struct babel_subtlv_owd *tlv = (void *) NEXT_TLV(hdr);
+  uint len = sizeof(*tlv);
+
+  if (len > max_len)
+    return -1;
+
+  TLV_HDR(tlv, BABEL_SUBTLV_OWD, len);
+  hdr->length += len;
+
+  put_u32(&tlv->owd, owd);
   return len;
 }
 
