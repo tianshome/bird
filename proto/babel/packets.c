@@ -186,7 +186,6 @@ struct babel_parse_state {
   u8 def_ip6_prefix_seen;	/* def_ip6_prefix is valid */
   u8 def_ip4_prefix_seen;	/* def_ip4_prefix is valid */
   u8 def_ip4_via_ip6_prefix_seen; /* def_ip4_via_ip6_prefix is valid */
-  u8 hello_tstamp_seen;	/* pkt contains a hello timestamp */
   u8 current_tlv_endpos;	/* End of self-terminating TLVs (offset from start) */
   u8 sadr_enabled;
   u8 is_unicast;
@@ -1340,16 +1339,11 @@ babel_read_timestamp(struct babel_tlv *hdr, union babel_msg *msg,
 
     msg->hello.tstamp = get_u32(&tlv->tstamp);
     msg->hello.pkt_received = state->received_time;
-    state->hello_tstamp_seen = 1;
     break;
 
   case BABEL_TLV_IHU:
     if (tlv->length < 8)
       return PARSE_ERROR;
-
-    /* RTT calculation relies on a Hello always being present with an IHU */
-    if (!state->hello_tstamp_seen)
-      break;
 
     msg->ihu.tstamp = get_u32(&tlv->tstamp);
     msg->ihu.tstamp_rcvd = get_u32(&tlv->tstamp_rcvd);
