@@ -27,6 +27,7 @@ CF_KEYWORDS(BABEL, INTERFACE, METRIC, RXCOST, HELLO, UPDATE, INTERVAL, PORT,
 	NEXT, HOP, IPV4, IPV6, SHOW, INTERFACES, NEIGHBORS,
 	ENTRIES, RANDOMIZE, ROUTER, ID, AUTHENTICATION, NONE, MAC, PERMISSIVE,
 	EXTENDED, TUNNEL, RTT, MIN, MAX, DECAY, SEND, TIMESTAMPS, COST, DELAY,
+	LATENCY, MODE, OWD,
 	PREFER, NATIVE)
 
 CF_GRAMMAR
@@ -72,6 +73,7 @@ babel_iface_start:
   BABEL_IFACE->rtt_max = BABEL_RTT_MAX;
   BABEL_IFACE->rtt_decay = BABEL_RTT_DECAY;
   BABEL_IFACE->rtt_send = 1;
+  BABEL_IFACE->latency_mode = BABEL_LATENCY_OWD;
   BABEL_IFACE->check_link = 1;
   BABEL_IFACE->ext_next_hop = 1;
 };
@@ -169,6 +171,8 @@ babel_iface_item:
  | RTT MAX expr_us { BABEL_IFACE->rtt_max = $3; }
  | RTT COST expr { BABEL_IFACE->rtt_cost = $3; if ($3 >= BABEL_INFINITY) cf_error("RTT cost must be < 65535"); }
  | RTT DECAY expr { BABEL_IFACE->rtt_decay = $3; if (($3 < 1) || ($3 > 256)) cf_error("RTT decay must be between 1-256"); }
+ | LATENCY MODE RTT { BABEL_IFACE->latency_mode = BABEL_LATENCY_RTT; }
+ | LATENCY MODE OWD { BABEL_IFACE->latency_mode = BABEL_LATENCY_OWD; }
  | SEND TIMESTAMPS bool { BABEL_IFACE->rtt_send = $3; }
  | password_list
  ;

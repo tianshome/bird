@@ -583,6 +583,33 @@ babel_compute_metric(struct babel_neighbor *n, uint metric)
   return MIN(metric + n->cost, BABEL_INFINITY);
 }
 
+static inline btime
+babel_latency_sample(struct babel_iface_config *cf, struct babel_neighbor *nbr, const char **kind)
+{
+  if (cf->latency_mode == BABEL_LATENCY_OWD)
+  {
+    if (nbr->owd_tx_valid && nbr->sowd_tx)
+    {
+      *kind = "OWD";
+      return nbr->sowd_tx;
+    }
+
+    if (nbr->srtt)
+    {
+      *kind = "RTT";
+      return nbr->srtt;
+    }
+  }
+  else if (nbr->srtt)
+  {
+    *kind = "RTT";
+    return nbr->srtt;
+  }
+
+  *kind = "none";
+  return 0;
+}
+
 static void
 babel_update_cost(struct babel_neighbor *nbr)
 {
@@ -628,22 +655,25 @@ babel_update_cost(struct babel_neighbor *nbr)
     break;
   }
 
-  if (cf->rtt_cost && nbr->srtt > cf->rtt_min)
+  const char *lat_kind = NULL;
+  btime lat = babel_latency_sample(cf, nbr, &lat_kind);
+
+  if (cf->rtt_cost && lat > cf->rtt_min)
   {
     uint rtt_cost = cf->rtt_cost;
 
-    if (nbr->srtt < cf->rtt_max)
+    if (lat < cf->rtt_max)
     {
       uint rtt_interval = cf->rtt_max TO_US - cf->rtt_min TO_US;
-      uint rtt_diff = (nbr->srtt TO_US - cf->rtt_min TO_US);
+      uint rtt_diff = (lat TO_US - cf->rtt_min TO_US);
 
       rtt_cost = (rtt_cost * rtt_diff) / rtt_interval;
     }
 
     txcost = MIN(txcost + rtt_cost, BABEL_INFINITY);
 
-    TRACE(D_EVENTS, "Added RTT cost %u to nbr %I on %s with srtt %t ms",
-	  rtt_cost, nbr->addr, nbr->ifa->iface->name, nbr->srtt * 1000);
+    TRACE(D_EVENTS, "Added %s latency cost %u to nbr %I on %s with sample %t ms",
+	  lat_kind, rtt_cost, nbr->addr, nbr->ifa->iface->name, lat * 1000);
   }
 
 done:
@@ -876,6 +906,12 @@ babel_build_ihu(union babel_msg *msg, struct babel_iface *ifa, struct babel_neig
   {
     msg->ihu.tstamp = n->last_tstamp;
     msg->ihu.tstamp_rcvd = n->last_tstamp_rcvd TO_US;
+  }
+
+  if (n->sowd_rx && n->clock_skew_valid && ifa->cf->rtt_send)
+  {
+    msg->ihu.owd = n->sowd_rx TO_US;
+    msg->ihu.owd_valid = 1;
   }
 
   TRACE(D_PACKETS, "Sending IHU for %I with rxcost %d interval %t",
@@ -1236,8 +1272,31 @@ babel_handle_hello(union babel_msg *m, struct babel_iface *ifa)
 
   if (msg->tstamp)
   {
+    s64 owd_sample = 0;
+
     n->last_tstamp = msg->tstamp;
     n->last_tstamp_rcvd = msg->pkt_received;
+
+    if (n->clock_skew_valid)
+    {
+      /*
+       * One-way delay from neighbour to us corrected by estimated clock skew
+       * (local clock minus neighbour clock).
+       */
+      owd_sample = ((s64) (msg->pkt_received TO_US)) - msg->tstamp;
+      owd_sample -= n->sclock_skew TO_US;
+
+      if ((owd_sample >= 0) && ((btime) owd_sample US_ <= BABEL_RTT_MAX_VALUE))
+      {
+	if (n->sowd_rx)
+	{
+	  uint decay = n->ifa->cf->rtt_decay;
+	  n->sowd_rx = (decay * owd_sample + (256 - decay) * n->sowd_rx) / 256;
+	}
+	else
+	  n->sowd_rx = owd_sample;
+      }
+    }
   }
   babel_update_hello_history(n, msg->seqno, msg->interval);
   babel_update_cost(n);
@@ -1273,6 +1332,7 @@ babel_handle_ihu(union babel_msg *m, struct babel_iface *ifa)
   if (msg->tstamp)
   {
     u32 rtt_sample = 0, pkt_received = msg->pkt_received TO_US;
+    s64 skew_sample;
     int remote_time, full_time;
 
     /* processing time reported by peer */
@@ -1299,6 +1359,44 @@ babel_handle_ihu(union babel_msg *m, struct babel_iface *ifa)
 
     TRACE(D_EVENTS, "RTT sample for neighbour %I on %s: %u us (srtt %t ms)",
           n->addr, ifa->ifname, rtt_sample, n->srtt * 1000);
+
+    if (n->last_tstamp_rcvd)
+    {
+      /*
+       * NTP-style skew estimate from four timestamps:
+       * ((T1 - T2) + (T4 - T3)) / 2, where local {T1,T4}, remote {T2,T3}.
+       */
+      skew_sample = ((s64) msg->tstamp - msg->tstamp_rcvd +
+		     ((s64) (n->last_tstamp_rcvd TO_US)) - n->last_tstamp) / 2;
+
+      if (n->clock_skew_valid)
+      {
+	uint decay = n->ifa->cf->rtt_decay;
+	n->sclock_skew = (decay * skew_sample + (256 - decay) * n->sclock_skew) / 256;
+      }
+      else
+	n->sclock_skew = skew_sample;
+
+      n->clock_skew_valid = 1;
+    }
+  }
+
+  if (msg->owd_valid && n->clock_skew_valid)
+  {
+    s64 owd_sample = msg->owd + (n->sclock_skew TO_US);
+
+    if ((owd_sample < 0) || ((btime) owd_sample US_ > BABEL_RTT_MAX_VALUE))
+      goto out;
+
+    if (n->sowd_tx)
+    {
+      uint decay = n->ifa->cf->rtt_decay;
+      n->sowd_tx = (decay * owd_sample + (256 - decay) * n->sowd_tx) / 256;
+    }
+    else
+      n->sowd_tx = owd_sample;
+
+    n->owd_tx_valid = 1;
   }
 
 out:
@@ -2284,8 +2382,8 @@ babel_show_neighbors(struct proto *P, const char *iff)
   }
 
   cli_msg(-1024, "%s:", p->p.name);
-  cli_msg(-1024, "%-25s %-10s %6s %6s %6s %7s %4s %9s",
-	  "IP address", "Interface", "Metric", "Routes", "Hellos", "Expires", "Auth", "RTT (ms)");
+  cli_msg(-1024, "%-25s %-10s %6s %6s %6s %7s %4s %9s %9s",
+	  "IP address", "Interface", "Metric", "Routes", "Hellos", "Expires", "Auth", "RTT (ms)", "OWD (ms)");
 
   WALK_LIST(ifa, p->interfaces)
   {
@@ -2299,11 +2397,20 @@ babel_show_neighbors(struct proto *P, const char *iff)
         rts++;
 
       uint hellos = u32_popcount(n->hello_map);
+      char owd_buf[32];
+      const char *owd = "-";
+
+      if (n->owd_tx_valid && n->sowd_tx)
+      {
+	bsprintf(owd_buf, "%t", n->sowd_tx * 1000);
+	owd = owd_buf;
+      }
+
       btime timer = (n->hello_expiry ?: n->init_expiry) - current_time();
-      cli_msg(-1024, "%-25I %-10s %6u %6u %6u %7t %-4s %9t",
+      cli_msg(-1024, "%-25I %-10s %6u %6u %6u %7t %-4s %9t %9s",
 	      n->addr, ifa->iface->name, n->cost, rts, hellos, MAX(timer, 0),
-              n->auth_passed ? "Yes" : "No",
-              n->srtt * 1000);
+	              n->auth_passed ? "Yes" : "No",
+	              n->srtt * 1000, owd);
     }
   }
 }

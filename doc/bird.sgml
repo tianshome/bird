@@ -2438,6 +2438,7 @@ protocol babel [<name>] {
 		next hop ipv6 <address>;
 		next hop prefer native|ipv6;
 		extended next hop <switch>;
+		latency mode rtt|owd;
 		rtt cost <number>;
 		rtt min <time>;
 		rtt max <time>;
@@ -2562,16 +2563,24 @@ protocol babel [<name>] {
       are available, the option <ref id="babel-next-hop-prefer"
       name="next hop prefer"> controls which one is advertised. Default: yes.
 
+      <tag><label id="babel-latency-mode">latency mode rtt|owd</tag>
+      Selects which latency sample source is used for latency-based metric
+      penalties configured by <ref id="babel-rtt-cost" name="rtt cost"> and
+      related options. Mode <cf/rtt/ uses the measured round-trip time, mode
+      <cf/owd/ uses one-way delay reported by neighbour in IHU sub-TLVs and
+      falls back to RTT until OWD is available from the neighbour. Default:
+      <cf/owd/.
+
       <tag><label id="babel-rtt-cost">rtt cost <m/number/</tag>
-      The RTT-based cost that will be applied to all routes from each neighbour
-      based on the measured RTT to that neighbour. If this value is set,
+      The latency-based cost that will be applied to all routes from each
+      neighbour based on the selected latency mode. If this value is set,
       timestamps will be included in generated Babel Hello and IHU messages, and
-      (if the neighbours also have timestamps enabled), the RTT to each
-      neighbour will be computed. An additional cost is added to a neighbour if
-      its RTT is above the <ref id="babel-rtt-min" name="rtt min"> value
+      (if the neighbours also have timestamps enabled), latency samples will be
+      computed. An additional cost is added to a neighbour if its latency is
+      above the <ref id="babel-rtt-min" name="rtt min"> value
       configured on the interface. The added cost scales linearly from 0 up to
-      the RTT cost configured in this option; the full cost is applied if the
-      neighbour RTT reaches the RTT configured in the <ref id="babel-rtt-max"
+      the cost configured in this option; the full cost is applied if the
+      neighbour latency reaches the value configured in the <ref id="babel-rtt-max"
       name="rtt max"> option (and for all RTTs above this value). Default: 0
       (disabled), except for tunnel interfaces, where it is 96.
 
