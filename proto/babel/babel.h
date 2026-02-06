@@ -259,6 +259,7 @@ struct babel_neighbor {
   btime sowd_rx;
   btime sowd_tx;
   btime sclock_skew;
+  u8 owd_rx_valid;
   u8 owd_tx_valid;
   u8 clock_skew_valid;
 

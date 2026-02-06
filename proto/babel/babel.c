@@ -588,7 +588,7 @@ babel_latency_sample(struct babel_iface_config *cf, struct babel_neighbor *nbr, 
 {
   if (cf->latency_mode == BABEL_LATENCY_OWD)
   {
-    if (nbr->owd_tx_valid && nbr->sowd_tx)
+    if (nbr->owd_tx_valid)
     {
       *kind = "OWD";
       return nbr->sowd_tx;
@@ -908,7 +908,7 @@ babel_build_ihu(union babel_msg *msg, struct babel_iface *ifa, struct babel_neig
     msg->ihu.tstamp_rcvd = n->last_tstamp_rcvd TO_US;
   }
 
-  if (n->sowd_rx && n->clock_skew_valid && ifa->cf->rtt_send)
+  if (n->owd_rx_valid && n->clock_skew_valid && ifa->cf->rtt_send)
   {
     msg->ihu.owd = n->sowd_rx TO_US;
     msg->ihu.owd_valid = 1;
@@ -1288,13 +1288,15 @@ babel_handle_hello(union babel_msg *m, struct babel_iface *ifa)
 
       if ((owd_sample >= 0) && ((btime) owd_sample US_ <= BABEL_RTT_MAX_VALUE))
       {
-	if (n->sowd_rx)
+	if (n->owd_rx_valid)
 	{
 	  uint decay = n->ifa->cf->rtt_decay;
 	  n->sowd_rx = (decay * owd_sample + (256 - decay) * n->sowd_rx) / 256;
 	}
 	else
 	  n->sowd_rx = owd_sample;
+
+	n->owd_rx_valid = 1;
       }
     }
   }
@@ -1333,7 +1335,7 @@ babel_handle_ihu(union babel_msg *m, struct babel_iface *ifa)
   {
     u32 rtt_sample = 0, pkt_received = msg->pkt_received TO_US;
     s64 skew_sample;
-    int remote_time, full_time;
+    s32 remote_time, full_time;
 
     /* processing time reported by peer */
     remote_time = (n->last_tstamp - msg->tstamp_rcvd);
@@ -1366,8 +1368,9 @@ babel_handle_ihu(union babel_msg *m, struct babel_iface *ifa)
        * NTP-style skew estimate from four timestamps:
        * ((T1 - T2) + (T4 - T3)) / 2, where local {T1,T4}, remote {T2,T3}.
        */
-      skew_sample = ((s64) msg->tstamp - msg->tstamp_rcvd +
-		     ((s64) (n->last_tstamp_rcvd TO_US)) - n->last_tstamp) / 2;
+      u32 last_tstamp_rcvd = n->last_tstamp_rcvd TO_US;
+      skew_sample = ((s64) (s32) (msg->tstamp - msg->tstamp_rcvd) +
+		     (s64) (s32) (last_tstamp_rcvd - n->last_tstamp)) / 2;
 
       if (n->clock_skew_valid)
       {
@@ -1381,14 +1384,14 @@ babel_handle_ihu(union babel_msg *m, struct babel_iface *ifa)
     }
   }
 
-  if (msg->owd_valid && n->clock_skew_valid)
+  if (msg->owd_valid)
   {
-    s64 owd_sample = msg->owd + (n->sclock_skew TO_US);
+    s64 owd_sample = msg->owd;
 
     if ((owd_sample < 0) || ((btime) owd_sample US_ > BABEL_RTT_MAX_VALUE))
       goto out;
 
-    if (n->sowd_tx)
+    if (n->owd_tx_valid)
     {
       uint decay = n->ifa->cf->rtt_decay;
       n->sowd_tx = (decay * owd_sample + (256 - decay) * n->sowd_tx) / 256;
@@ -2400,7 +2403,7 @@ babel_show_neighbors(struct proto *P, const char *iff)
       char owd_buf[32];
       const char *owd = "-";
 
-      if (n->owd_tx_valid && n->sowd_tx)
+      if (n->owd_tx_valid)
       {
 	bsprintf(owd_buf, "%t", n->sowd_tx * 1000);
 	owd = owd_buf;
